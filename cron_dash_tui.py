@@ -69,82 +69,101 @@ REFRESH_INTERVAL = 1.0  # seconds
 
 class CronDashboard:
     """Rich-based terminal dashboard for cron job monitoring."""
-    
+
     def __init__(self):
         self.console = Console()
         self.db_path = DB_PATH
+        self.conn = None
         self.success_history = []  # For sparkline
         self.runtime_history = []  # For sparkline (using intervals as proxy)
+
+    def _initialize_db(self):
+        """Check for DB and create a persistent connection."""
+        if not self.db_path.exists():
+            error_panel = Panel(
+                Text.assemble(
+                    (f"Database not found at: {self.db_path}\n", "bold red"),
+                    ("Please run the collector script first: ", "white"),
+                    ("python cron_collector.py --parse-existing", "cyan")
+                ),
+                title="[bold red]Database Error",
+                border_style="red",
+                padding=(1, 2)
+            )
+            self.console.print(error_panel)
+            return False
         
-    def get_db_connection(self) -> Optional[sqlite3.Connection]:
-        """Get database connection if available."""
         try:
-            if not self.db_path.exists():
-                return None
-            return sqlite3.connect(self.db_path)
-        except Exception:
-            return None
-    
-    def get_last_run_status(self) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+            self.conn = sqlite3.connect(self.db_path)
+            self.conn.row_factory = sqlite3.Row
+        except sqlite3.Error as e:
+            self.console.print(f"[bold red]Database connection failed: {e}")
+            return False
+        return True
+
+    def close_db_connection(self):
+        """Close the database connection."""
+        if self.conn:
+            self.conn.close()
+
+    def _reconnect_db(self):
+        """Attempt to reconnect to the database."""
+        try:
+            if self.conn:
+                self.conn.close()
+            self.conn = sqlite3.connect(self.db_path)
+            self.conn.row_factory = sqlite3.Row
+        except sqlite3.Error:
+            self.conn = None
+
+    def get_last_run_status(self) -> Optional[sqlite3.Row]:
         """Get the most recent run status."""
-        conn = self.get_db_connection()
-        if not conn:
-            return None, None, None
-            
         try:
-            cursor = conn.execute("""
+            cursor = self.conn.execute(
+                """
                 SELECT timestamp, exit_code, message 
                 FROM cron_entries 
                 ORDER BY timestamp DESC 
                 LIMIT 1
-            """)
-            row = cursor.fetchone()
-            if row:
-                return row[0], row[1], row[2]
-            return None, None, None
-        except Exception:
-            return None, None, None
-        finally:
-            conn.close()
-    
-    def get_24h_runs(self) -> List[Tuple[str, int]]:
+                """
+            )
+            return cursor.fetchone()
+        except sqlite3.Error:
+            self._reconnect_db()
+            return None
+
+    def get_24h_runs(self) -> List[sqlite3.Row]:
         """Get all runs in the last 24 hours."""
-        conn = self.get_db_connection()
-        if not conn:
-            return []
-            
         try:
             day_ago = (datetime.now() - timedelta(days=1)).isoformat()
-            cursor = conn.execute("""
+            cursor = self.conn.execute(
+                """
                 SELECT timestamp, exit_code 
                 FROM cron_entries 
                 WHERE timestamp >= ?
                 ORDER BY timestamp ASC
-            """, (day_ago,))
+                """, (day_ago,)
+            )
             return cursor.fetchall()
-        except Exception:
+        except sqlite3.Error:
+            self._reconnect_db()
             return []
-        finally:
-            conn.close()
-    
-    def get_recent_runs(self, limit: int = 10) -> List[Tuple[str, int, str]]:
+
+    def get_recent_runs(self, limit: int = 10) -> List[sqlite3.Row]:
         """Get the most recent runs."""
-        conn = self.get_db_connection()
-        if not conn:
-            return []
-            
         try:
-            cursor = conn.execute("""
+            cursor = self.conn.execute(
+                """
                 SELECT timestamp, exit_code, message 
                 FROM cron_entries 
                 ORDER BY timestamp DESC 
                 LIMIT ?
-            """, (limit,))
+                """, (limit,)
+            )
             return cursor.fetchall()
-        except Exception:
+        except sqlite3.Error:
+            self._reconnect_db()
             return []
-        finally:
-            conn.close()
     
     def calculate_run_duration(self, runs: List[Tuple[str, int]]) -> List[float]:
         """Calculate approximate durations between runs."""
@@ -194,12 +213,16 @@ class CronDashboard:
     
     def create_status_ticker(self) -> Panel:
         """Create the live status ticker panel."""
-        timestamp, exit_code, message = self.get_last_run_status()
+        last_run = self.get_last_run_status()
         
-        if timestamp is None:
+        if last_run is None:
             status_text = Text("No runs recorded", style="dim")
             time_text = Text("─", style="dim")
         else:
+            timestamp = last_run['timestamp']
+            exit_code = last_run['exit_code']
+            message = last_run['message']
+            
             # Format timestamp
             try:
                 dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
@@ -246,7 +269,7 @@ class CronDashboard:
             bar_content = Text("No data available", style="dim")
         else:
             # Create blocks representing success/failure
-            success_count = sum(1 for _, exit_code in runs if exit_code == 0)
+            success_count = sum(1 for run in runs if run['exit_code'] == 0)
             failure_count = len(runs) - success_count
             
             # Calculate success rate
@@ -262,8 +285,8 @@ class CronDashboard:
                 sampled_runs = runs
             
             bar_text = Text()
-            for _, exit_code in sampled_runs:
-                if exit_code == 0:
+            for run in sampled_runs:
+                if run['exit_code'] == 0:
                     bar_text.append("█", style="green")
                 else:
                     bar_text.append("█", style="red")
@@ -294,7 +317,11 @@ class CronDashboard:
         if not runs:
             table.add_row("─", "─", "No runs recorded")
         else:
-            for timestamp, exit_code, message in runs:
+            for run in runs:
+                timestamp = run['timestamp']
+                exit_code = run['exit_code']
+                message = run['message']
+                
                 try:
                     dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
                     time_str = dt.strftime("%H:%M:%S")
@@ -326,13 +353,15 @@ class CronDashboard:
             graph_content = Text("No data for graphs", style="dim")
         else:
             # Update success history
-            recent_success_rate = (sum(1 for _, exit_code in runs[-20:] if exit_code == 0) / min(len(runs), 20)) * 100
+            recent_success_rate = (sum(1 for run in runs[-20:] if run['exit_code'] == 0) / min(len(runs), 20)) * 100
             self.success_history.append(recent_success_rate)
             if len(self.success_history) > 30:
                 self.success_history.pop(0)
             
             # Update runtime history (using intervals as proxy)
-            durations = self.calculate_run_duration(runs[-10:])
+            # Convert SQLite Row objects to tuples for calculate_run_duration
+            run_tuples = [(run['timestamp'], run['exit_code']) for run in runs[-10:]]
+            durations = self.calculate_run_duration(run_tuples)
             if durations:
                 avg_duration = statistics.mean(durations)
                 self.runtime_history.append(avg_duration)
@@ -396,10 +425,8 @@ class CronDashboard:
     
     def run(self):
         """Run the dashboard with live updates."""
-        # Check if database exists
-        if not self.db_path.exists():
-            self.console.print(f"[red]Database not found at {self.db_path}[/red]")
-            self.console.print("[yellow]Run 'python cron_collector.py --parse-existing' first[/yellow]")
+        # Initialize database connection
+        if not self._initialize_db():
             return
         
         layout = self.create_dashboard_layout()
@@ -442,6 +469,8 @@ class CronDashboard:
         except KeyboardInterrupt:
             self.console.print(footer)
             self.console.print("[green]Dashboard stopped by user[/green]")
+        finally:
+            self.close_db_connection()
 
 
 def main():

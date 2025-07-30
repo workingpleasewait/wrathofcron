@@ -19,12 +19,16 @@ import sys
 import time
 import os
 import subprocess
-from datetime import datetime, timedelta
+import platform
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import logging
 import signal
 import threading
+from dateutil import parser as dateutil_parser
+import daemon
+from daemon import pidfile
 
 # Configuration
 LADDER_JSONL_PATH = Path.home() / "logs" / "ladder.jsonl"
@@ -47,12 +51,178 @@ logger = logging.getLogger(__name__)
 class CronCollector:
     """Data pipeline for collecting and analyzing cron job execution data."""
     
-    def __init__(self):
-        self.db_path = DB_PATH
+    def __init__(self, db_path: Optional[Path] = None, log_level: str = "INFO"):
+        self.db_path = db_path or DB_PATH
         self.jsonl_path = LADDER_JSONL_PATH
-        self.last_position = 0
+        self.last_pos_file = Path.home() / ".cron_dash" / "last_pos"
+        self.pid_file_path = Path.home() / ".cron_dash" / "cron_collector.pid"
         self.running = False
+        
+        # Set up logging
+        numeric_level = getattr(logging, log_level.upper(), None)
+        if not isinstance(numeric_level, int):
+            raise ValueError(f'Invalid log level: {log_level}')
+        logger.setLevel(numeric_level)
+        
         self.init_database()
+        self.load_last_position()
+        
+    def load_last_position(self):
+        """Load the last read position from file."""
+        try:
+            if self.last_pos_file.exists():
+                with open(self.last_pos_file, 'r') as f:
+                    self.last_position = int(f.read().strip())
+                logger.debug(f"Loaded last position: {self.last_position}")
+            else:
+                self.last_position = 0
+                logger.debug("No last position file found, starting from beginning")
+        except Exception as e:
+            logger.warning(f"Failed to load last position: {e}, starting from 0")
+            self.last_position = 0
+            
+    def save_last_position(self):
+        """Save the current read position to file."""
+        try:
+            self.last_pos_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.last_pos_file, 'w') as f:
+                f.write(str(self.last_position))
+            logger.debug(f"Saved last position: {self.last_position}")
+        except Exception as e:
+            logger.error(f"Failed to save last position: {e}")
+            
+    def normalize_timestamp(self, timestamp: str) -> str:
+        """Convert timestamp to UTC ISO-8601 format."""
+        try:
+            # Parse the timestamp using dateutil which handles various formats
+            dt = dateutil_parser.isoparse(timestamp)
+            
+            # Convert to UTC if timezone aware, otherwise assume UTC
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+                
+            # Return as ISO-8601 string
+            return dt.isoformat()
+        except Exception as e:
+            logger.warning(f"Failed to normalize timestamp '{timestamp}': {e}")
+            return timestamp  # Return original if parsing fails
+            
+    def send_os_notification(self, title: str, message: str, sound: str = "default"):
+        """Send OS-specific notification."""
+        system = platform.system().lower()
+        
+        try:
+            if system == "darwin":  # macOS
+                self._send_macos_notification(title, message, sound)
+            elif system == "linux":
+                self._send_linux_notification(title, message)
+            else:
+                logger.warning(f"Notifications not supported on {system}")
+                logger.info(f"NOTIFICATION: {title} - {message}")
+        except Exception as e:
+            logger.error(f"Failed to send notification: {e}")
+            logger.info(f"FALLBACK NOTIFICATION: {title} - {message}")
+            
+    def _send_macos_notification(self, title: str, message: str, sound: str = "default"):
+        """Send macOS notification using terminal-notifier."""
+        # Check if terminal-notifier is available
+        result = subprocess.run(
+            ["which", "terminal-notifier"], 
+            capture_output=True, 
+            text=True
+        )
+        
+        if result.returncode != 0:
+            error_msg = "terminal-notifier not found. Install with: brew install terminal-notifier"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+            
+        # Send notification
+        cmd = [
+            "terminal-notifier",
+            "-title", title,
+            "-message", message,
+            "-sound", sound
+        ]
+        
+        subprocess.run(cmd, check=True)
+        logger.info(f"macOS notification sent: {title} - {message}")
+        
+    def _send_linux_notification(self, title: str, message: str):
+        """Send Linux notification using notify-send."""
+        # Check if notify-send is available
+        result = subprocess.run(
+            ["which", "notify-send"], 
+            capture_output=True, 
+            text=True
+        )
+        
+        if result.returncode != 0:
+            logger.warning("notify-send not found, falling back to logger")
+            logger.info(f"NOTIFICATION: {title} - {message}")
+            return
+            
+        # Send notification
+        cmd = ["notify-send", title, message]
+        subprocess.run(cmd, check=True)
+        logger.info(f"Linux notification sent: {title} - {message}")
+        
+    def stream_parse_jsonl(self, file_path: Path) -> int:
+        """Stream-parse JSONL file using lazy line reading."""
+        entries_processed = 0
+        
+        try:
+            with open(file_path, 'r') as f:
+                # Seek to last known position
+                f.seek(self.last_position)
+                
+                # Process lines one by one (lazy reading)
+                for line in f:
+                    entry = self.parse_jsonl_line(line)
+                    if entry:
+                        # Normalize timestamp to UTC ISO-8601
+                        entry['timestamp'] = self.normalize_timestamp(entry['timestamp'])
+                        
+                        if self.insert_entry_safe(entry):
+                            entries_processed += 1
+                            
+                            # Send notification for failures
+                            if entry['exit_code'] != 0:
+                                self.send_os_notification(
+                                    "🚨 Cron Job Failed",
+                                    f"Exit code {entry['exit_code']}: {entry['message'][:100]}",
+                                    "Basso"
+                                )
+                    
+                # Update and save position
+                self.last_position = f.tell()
+                self.save_last_position()
+                
+        except Exception as e:
+            logger.error(f"Failed to stream parse JSONL: {e}")
+            
+        return entries_processed
+        
+    def create_pid_file(self):
+        """Create PID file for daemon process."""
+        try:
+            self.pid_file_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.pid_file_path, 'w') as f:
+                f.write(str(os.getpid()))
+            logger.info(f"PID file created: {self.pid_file_path}")
+        except Exception as e:
+            logger.error(f"Failed to create PID file: {e}")
+            
+    def remove_pid_file(self):
+        """Remove PID file."""
+        try:
+            if self.pid_file_path.exists():
+                self.pid_file_path.unlink()
+                logger.info(f"PID file removed: {self.pid_file_path}")
+        except Exception as e:
+            logger.error(f"Failed to remove PID file: {e}")
         
     def init_database(self):
         """Initialize SQLite database with required tables."""
@@ -92,7 +262,7 @@ class CronCollector:
             logger.error(f"Failed to initialize database: {e}")
             raise
             
-    def parse_jsonl_line(self, line: str) -> Optional[Dict]:
+    def parse_jsonl_line(self, line: str) -> Optional[Dict[str, Any]]:
         """Parse a single JSONL line into structured data."""
         try:
             line = line.strip()
@@ -142,6 +312,32 @@ class CronCollector:
                     logger.debug(f"Duplicate entry skipped: {entry['message'][:50]}...")
                     return False
                     
+        except Exception as e:
+            logger.error(f"Failed to insert entry: {e}")
+            return False
+            
+    def insert_entry_safe(self, entry: Dict[str, Any]) -> bool:
+        """Insert entry into database with explicit IntegrityError handling."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO cron_entries 
+                    (timestamp, exit_code, message, parsed_at)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    entry['timestamp'],
+                    entry['exit_code'], 
+                    entry['message'],
+                    entry['parsed_at']
+                ))
+                
+                conn.commit()
+                logger.debug(f"Inserted new entry: {entry['message'][:50]}...")
+                return True
+                
+        except sqlite3.IntegrityError as e:
+            logger.debug(f"Duplicate entry skipped (IntegrityError): {entry['message'][:50]}... - {e}")
+            return False
         except Exception as e:
             logger.error(f"Failed to insert entry: {e}")
             return False
@@ -216,24 +412,35 @@ class CronCollector:
             return 0
             
     def parse_existing_entries(self) -> int:
-        """Parse all existing entries from JSONL file."""
+        """Parse all existing entries from JSONL file using stream parsing."""
         if not self.jsonl_path.exists():
             logger.warning(f"JSONL file not found: {self.jsonl_path}")
             return 0
             
         try:
-            with open(self.jsonl_path, 'r') as f:
-                lines = f.readlines()
-                
+            # Reset position to start from beginning
+            self.last_position = 0
+            
+            # Use stream parsing for lazy line reading
             entries_processed = 0
-            for line in lines:
-                entry = self.parse_jsonl_line(line)
-                if entry:
-                    if self.insert_entry(entry):
-                        entries_processed += 1
+            with open(self.jsonl_path, 'r') as f:
+                for line in f:
+                    entry = self.parse_jsonl_line(line)
+                    if entry:
+                        # Normalize timestamp to UTC ISO-8601
+                        entry['timestamp'] = self.normalize_timestamp(entry['timestamp'])
                         
+                        if self.insert_entry_safe(entry):
+                            entries_processed += 1
+                            
             logger.info(f"Parsed {entries_processed} existing entries")
-            self.last_position = 0  # Reset position for watching
+            
+            # Update position to end of file for future watching
+            with open(self.jsonl_path, 'r') as f:
+                f.seek(0, 2)  # Seek to end
+                self.last_position = f.tell()
+                self.save_last_position()
+                
             return entries_processed
             
         except Exception as e:
@@ -426,16 +633,41 @@ class CronCollector:
             logger.info("Watch mode stopped")
             
     def run_daemon(self):
-        """Run as a background daemon."""
-        # Redirect stdout/stderr for daemon mode
-        log_file = Path.home() / ".cron_dash" / "daemon.log"
-        
-        with open(log_file, 'a') as f:
-            sys.stdout = f
-            sys.stderr = f
-            
-            logger.info("Starting daemon mode...")
-            self.watch_mode()
+        """Run as a background daemon with PID file management."""
+        log_file_path = Path.home() / ".cron_dash" / "daemon.log"
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Ensure the PID file directory exists
+        self.pid_file_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_lock_file = pidfile.PIDLockFile(self.pid_file_path)
+
+        # Define the daemon context
+        context = daemon.DaemonContext(
+            working_directory=os.getcwd(),
+            umask=0o022,
+            pidfile=pid_lock_file,
+            stdout=open(log_file_path, 'a+'),
+            stderr=open(log_file_path, 'a+')
+        )
+
+        # Set up signal handling for graceful shutdown within the daemon context
+        def sigterm_handler(signum, frame):
+            logger.info("Daemon received SIGTERM signal. Shutting down.")
+            self.running = False
+
+        context.signal_map = {
+            signal.SIGTERM: sigterm_handler,
+            signal.SIGHUP: None,  # Example: could be used to reload config
+        }
+
+        logger.info("Starting daemon mode...")
+        try:
+            with context:
+                logger.info("Daemon started successfully.")
+                self.watch_mode()
+            logger.info("Daemon stopped.")
+        except Exception as e:
+            logger.error(f"Error in daemon context: {e}")
 
 
 def main():
@@ -477,13 +709,27 @@ Examples:
         help=f"Check interval in seconds (default: {CHECK_INTERVAL})"
     )
     
+    parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=DB_PATH,
+        help=f"Database path (default: {DB_PATH})"
+    )
+    
+    parser.add_argument(
+        "--log-level",
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help="Logging level (default: INFO)"
+    )
+    
     args = parser.parse_args()
     
     # Update check interval
     check_interval = args.check_interval
     
     try:
-        collector = CronCollector()
+        collector = CronCollector(db_path=args.db_path, log_level=args.log_level)
         
         if args.parse_existing:
             count = collector.parse_existing_entries()

@@ -23,9 +23,12 @@ USAGE:
 The dashboard reads from ~/.cron_dash/ladder.db and displays interactive charts.
 """
 
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, g, request
+from werkzeug.security import check_password_hash, generate_password_hash
+from functools import wraps
 import sqlite3
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -38,6 +41,17 @@ import socket
 
 app = Flask(__name__)
 
+# Configuration from environment variables
+DEBUG = os.getenv('DEBUG', 'false').lower() in ('true', '1', 'yes', 'on')
+HOST = os.getenv('HOST', '0.0.0.0')
+PORT = int(os.getenv('PORT', '5001'))
+
+# Basic Auth configuration
+AUTH_USERNAME = os.getenv('AUTH_USERNAME', 'admin')
+AUTH_PASSWORD = os.getenv('AUTH_PASSWORD', 'password')
+# Store password hash for security
+AUTH_PASSWORD_HASH = generate_password_hash(AUTH_PASSWORD)
+
 # Database path (matches cron_collector.py)
 DB_PATH = Path.home() / ".cron_dash" / "ladder.db"
 
@@ -47,18 +61,10 @@ class CronWebDashboard:
     def __init__(self):
         self.db_path = DB_PATH
         
-    def get_db_connection(self) -> Optional[sqlite3.Connection]:
-        """Get database connection if available."""
-        try:
-            if not self.db_path.exists():
-                return None
-            return sqlite3.connect(self.db_path)
-        except Exception:
-            return None
     
     def get_last_run_status(self) -> Tuple[Optional[str], Optional[int], Optional[str]]:
         """Get the most recent run status."""
-        conn = self.get_db_connection()
+        conn = get_db()
         if not conn:
             return None, None, None
             
@@ -75,12 +81,10 @@ class CronWebDashboard:
             return None, None, None
         except Exception:
             return None, None, None
-        finally:
-            conn.close()
     
     def get_7day_runs(self) -> List[Tuple[str, int, str]]:
         """Get all runs in the last 7 days."""
-        conn = self.get_db_connection()
+        conn = get_db()
         if not conn:
             return []
             
@@ -95,12 +99,10 @@ class CronWebDashboard:
             return cursor.fetchall()
         except Exception:
             return []
-        finally:
-            conn.close()
     
     def get_24h_runs(self) -> List[Tuple[str, int, str]]:
         """Get all runs in the last 24 hours."""
-        conn = self.get_db_connection()
+        conn = get_db()
         if not conn:
             return []
             
@@ -115,8 +117,6 @@ class CronWebDashboard:
             return cursor.fetchall()
         except Exception:
             return []
-        finally:
-            conn.close()
     
     def calculate_run_intervals(self, runs: List[Tuple[str, int, str]]) -> List[Tuple[datetime, float]]:
         """Calculate intervals between runs as proxy for runtime."""
@@ -562,9 +562,47 @@ class CronWebDashboard:
             print(f"Error getting cron jobs: {e}")
             return []
 
+# Database connection management
+def get_db():
+    """Get database connection stored in g."""
+    if 'db' not in g:
+        if DB_PATH.exists():
+            g.db = sqlite3.connect(DB_PATH)
+        else:
+            g.db = None
+    return g.db
+
+@app.teardown_appcontext
+def close_db(error):
+    """Close database connection."""
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+# Basic Authentication
+def requires_auth(f):
+    """Decorator that requires HTTP Basic Authentication."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+def check_auth(username, password):
+    """Check if username/password combination is valid."""
+    return username == AUTH_USERNAME and check_password_hash(AUTH_PASSWORD_HASH, password)
+
+def authenticate():
+    """Send 401 response that enables basic auth."""
+    return ('Authentication required', 401, 
+            {'WWW-Authenticate': 'Basic realm="Cron Dashboard"'})
+
 dashboard = CronWebDashboard()
 
 @app.route('/')
+@requires_auth
 def index():
     """Main dashboard page."""
     runtime_chart = dashboard.create_runtime_chart()
@@ -887,4 +925,4 @@ def index():
     )
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=DEBUG, host=HOST, port=PORT)

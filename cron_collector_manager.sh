@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # Cron Collector Management Script
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,9 +10,11 @@ PID_FILE="$HOME/.cron_dash/collector.pid"
 LOG_FILE="$HOME/.cron_dash/collector.log"
 
 start_collector() {
-    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-        echo "📊 Cron collector is already running (PID: $(cat $PID_FILE))"
-        return 0
+    if [ -f "$PID_FILE" ]; then
+        if PID=$(cat "$PID_FILE") && kill -0 "$PID" 2>/dev/null; then
+            echo "📊 Cron collector is already running (PID: $PID)"
+            return 0
+        fi
     fi
     
     echo "🚀 Starting cron collector daemon..."
@@ -22,8 +26,8 @@ start_collector() {
     
     sleep 2
     
-    if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-        echo "✅ Cron collector started successfully (PID: $(cat $PID_FILE))"
+    if [ -f "$PID_FILE" ] && PID=$(cat "$PID_FILE") && kill -0 "$PID" 2>/dev/null; then
+        echo "✅ Cron collector started successfully (PID: $PID)"
         echo "📋 Log file: $LOG_FILE"
         echo "💾 Database: ~/.cron_dash/ladder.db"
     else
@@ -35,12 +39,15 @@ start_collector() {
 
 stop_collector() {
     if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        if kill -0 "$PID" 2>/dev/null; then
-            kill "$PID"
-            echo "🛑 Stopped cron collector (PID: $PID)"
+        if PID=$(cat "$PID_FILE"); then
+            if kill -0 "$PID" 2>/dev/null; then
+                kill "$PID"
+                echo "🛑 Stopped cron collector (PID: $PID)"
+            else
+                echo "⚠️  Process $PID not found"
+            fi
         else
-            echo "⚠️  Process $PID not found"
+            echo "⚠️  Invalid PID file content"
         fi
         rm -f "$PID_FILE"
     else
@@ -49,8 +56,8 @@ stop_collector() {
 }
 
 status_collector() {
-    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-        echo "📊 Cron collector is running (PID: $(cat $PID_FILE))"
+    if [ -f "$PID_FILE" ] && PID=$(cat "$PID_FILE") && kill -0 "$PID" 2>/dev/null; then
+        echo "📊 Cron collector is running (PID: $PID)"
         echo "📁 Watching: ~/logs/ladder.jsonl"
         echo "💾 Database: ~/.cron_dash/ladder.db"
         echo "📋 Log file: $LOG_FILE"
@@ -70,7 +77,7 @@ show_logs() {
     if [ -f "$LOG_FILE" ]; then
         echo "📋 Recent cron collector activity:"
         echo "=================================="
-        tail -20 "$LOG_FILE"
+        tail -F -20 "$LOG_FILE"
     else
         echo "📋 No log file found yet"
     fi
@@ -92,7 +99,7 @@ install_cron() {
     echo "⚙️  Installing cron collector as a cron job..."
     
     # Create a cron entry to start the collector on reboot
-    CRON_ENTRY="@reboot cd $SCRIPT_DIR && ./cron_collector_manager.sh start"
+    CRON_ENTRY="@reboot cd \"$SCRIPT_DIR\" && ./cron_collector_manager.sh start"
     
     # Check if entry already exists
     if crontab -l 2>/dev/null | grep -q "cron_collector_manager.sh start"; then
@@ -104,7 +111,7 @@ install_cron() {
     fi
     
     # Also start it now if not running
-    if ! ([ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null); then
+    if ! ([ -f "$PID_FILE" ] && PID=$(cat "$PID_FILE") && kill -0 "$PID" 2>/dev/null); then
         start_collector
     fi
 }

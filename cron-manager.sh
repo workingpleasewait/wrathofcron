@@ -1,18 +1,26 @@
 #!/bin/bash
 
+# Enable strict error handling
+set -euo pipefail
+
 # Centralized Cron Job Manager
 # Syncs cron jobs across multiple machines via Git
 # Integrated with warp.sync-with-readme system
 
 CRON_FILE="shared-crontab.txt"
 MACHINE_SPECIFIC_DIR="cron-jobs"
-MACHINE_NAME=$(hostname -s)
-BACKUP_FILE="crontab-backup-$(date +%Y%m%d-%H%M%S).txt"
+# Support MACHINE_NAME_OVERRIDE environment variable
+MACHINE_NAME="${MACHINE_NAME_OVERRIDE:-$(hostname -s)}"
+BACKUP_FILE="crontab-backup-$(LC_ALL=C date +%Y%m%d-%H%M%S).txt"
 LOG_FILE="cron-sync.log"
+TMPFILE=""
+
+# Ensure temp file cleanup on exit
+trap 'rm -f "$TMPFILE"' EXIT
 
 # Logging function
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    echo "[$(LC_ALL=C date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
 create_machine_specific_dir() {
@@ -25,38 +33,37 @@ install_shared_cron() {
     create_machine_specific_dir
     
     # Backup existing crontab
-    if crontab -l > /dev/null 2>&1; then
+    if crontab -l 2>/dev/null > /dev/null; then
         crontab -l > "$BACKUP_FILE"
         log "Backed up existing crontab to $BACKUP_FILE"
     fi
     
     # Combine shared and machine-specific cron jobs
-    TEMP_CRON="temp-combined-cron.txt"
-    > "$TEMP_CRON"  # Clear temp file
+    TMPFILE=$(mktemp)
+    > "$TMPFILE"  # Clear temp file
     
     # Add shared cront jobs
     if [ -f "$CRON_FILE" ]; then
         log "Adding shared cron jobs from $CRON_FILE"
-        echo "# === SHARED CRON JOBS (synced across all machines) ===" >> "$TEMP_CRON"
-        cat "$CRON_FILE" >> "$TEMP_CRON"
-        echo "" >> "$TEMP_CRON"
+        echo "# === SHARED CRON JOBS (synced across all machines) ===" >> "$TMPFILE"
+        cat "$CRON_FILE" >> "$TMPFILE"
+        echo "" >> "$TMPFILE"
     fi
     
     # Add machine-specific cron jobs
     MACHINE_CRON="$MACHINE_SPECIFIC_DIR/$MACHINE_NAME-crontab.txt"
     if [ -f "$MACHINE_CRON" ]; then
         log "Adding machine-specific cron jobs from $MACHINE_CRON"
-        echo "# === MACHINE-SPECIFIC CRON JOBS ($MACHINE_NAME only) ===" >> "$TEMP_CRON"
-        cat "$MACHINE_CRON" >> "$TEMP_CRON"
+        echo "# === MACHINE-SPECIFIC CRON JOBS ($MACHINE_NAME only) ===" >> "$TMPFILE"
+        cat "$MACHINE_CRON" >> "$TMPFILE"
     fi
     
     # Install combined crontab
-    if [ -s "$TEMP_CRON" ]; then
-        crontab "$TEMP_CRON"
+    if [ -s "$TMPFILE" ]; then
+        crontab "$TMPFILE"
         log "✅ Installed combined cron jobs (shared + machine-specific)"
         echo "📊 Active cron jobs:"
         crontab -l
-        rm "$TEMP_CRON"
     else
         log "❌ No cron jobs to install"
     fi
@@ -65,13 +72,13 @@ install_shared_cron() {
 sync_cron_from_current() {
     echo "📤 Syncing current cron jobs to shared file..."
     
-    if crontab -l > /dev/null 2>&1; then
+    if crontab -l 2>/dev/null > /dev/null; then
         crontab -l > "$CRON_FILE"
         echo "✅ Current cron jobs saved to $CRON_FILE"
         
         # Add to git and commit
         git add "$CRON_FILE"
-        git commit -m "Update shared cron jobs - $(date '+%Y-%m-%d %H:%M:%S')"
+        git commit -m "Update shared cron jobs - $(LC_ALL=C date '+%Y-%m-%d %H:%M:%S')"
         git push
         echo "✅ Cron jobs pushed to repository"
     else
@@ -100,7 +107,7 @@ show_machine_cron() {
 
 show_current_cron() {
     echo "📊 Currently active cron jobs:"
-    if crontab -l > /dev/null 2>&1; then
+    if crontab -l 2>/dev/null > /dev/null; then
         crontab -l
     else
         echo "❌ No active cron jobs"
@@ -158,7 +165,7 @@ status() {
         echo "🖥️  Machine-specific jobs: 0 (no file)"
     fi
     
-    if crontab -l > /dev/null 2>&1; then
+    if crontab -l 2>/dev/null > /dev/null; then
         ACTIVE_COUNT=$(crontab -l | grep -v '^#' | grep -v '^$' | wc -l | tr -d ' ')
         echo "⚡ Active cron jobs: $ACTIVE_COUNT"
     else
