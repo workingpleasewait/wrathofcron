@@ -6,19 +6,6 @@
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-## 📦 Repository Split
-
-**This repository was separated from coinbase-trading on July 30, 2025.** 
-
-WrathOfCron is now a standalone cron job management and monitoring system, independent of trading functionality. This split ensures:
-
-- **🎯 Focused Purpose**: Dedicated to cron job management and monitoring
-- **🔧 Independent Operation**: No trading dependencies or external API requirements
-- **🚀 Simplified Setup**: Pure Python/shell environment with no financial API credentials needed
-- **📊 Core Features**: Complete monitoring, alerting, and dashboard functionality
-
-For trading-related functionality, see the separate [coinbase-trading](https://github.com/workingpleasewait/coinbase-trading) repository.
-
 ## 🎯 Overview
 
 WrathOfCron is a powerful toolkit for managing, monitoring, and analyzing cron jobs across multiple machines. It combines centralized configuration management with real-time monitoring, alerting, and visual analytics.
@@ -326,6 +313,10 @@ MIT License - see LICENSE file for details.
 A playful homage to the 1982 film **"Star Trek II: The Wrath of Khan"** – because managing cron jobs shouldn't make you angry! Just as Khan was a formidable adversary who required careful strategy to defeat, unruly cron jobs can wreak havoc on your systems if left unchecked.
 
 This toolkit brings peace and order to the chaotic world of scheduled tasks, turning the "wrath" of broken cron jobs into the "wisdom" of well-monitored automation. Consider WrathOfCron your strategic defense system against the Khan-like chaos of failing scheduled tasks.
+
+## 📜 Project History
+
+*Note: This project was originally developed as part of a larger system and was separated into its own repository on July 30, 2025, to provide a focused, standalone cron management solution.*
 
 ---
 
