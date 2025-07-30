@@ -1,0 +1,5 @@
+rich
+flask
+plotly
+python-dateutil
+python-daemon
