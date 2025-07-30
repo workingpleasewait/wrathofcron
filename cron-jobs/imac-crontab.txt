@@ -1,0 +1,11 @@
+# Machine-specific cron jobs for this iMac
+# These jobs only run on this specific machine
+
+# Restart network service every Sunday at 3 AM (iMac-specific maintenance) 
+0 3 * * 0 /System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -z
+
+# Clean up temporary files daily at 2 AM
+0 2 * * * find /tmp -name "*" -type f -mtime +7 -delete 2>/dev/null
+
+# Update Homebrew every Monday at 6 AM  
+0 6 * * 1 /usr/local/bin/brew update && /usr/local/bin/brew upgrade

@@ -1,0 +1,6 @@
+[2025-07-29 00:20:31] Installing shared cron jobs on jeff...
+[2025-07-29 00:20:31] Created machine-specific directory: cron-jobs
+[2025-07-29 00:20:31] Backed up existing crontab to crontab-backup-20250729-002031.txt
+[2025-07-29 00:20:31] Adding shared cron jobs from shared-crontab.txt
+[2025-07-29 00:20:31] Adding machine-specific cron jobs from cron-jobs/jeff-crontab.txt
+[2025-07-29 00:20:31] ✅ Installed combined cron jobs (shared + machine-specific)

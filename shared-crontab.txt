@@ -1,0 +1,8 @@
+# Example shared crontab file for multi-machine synchronization
+# Add cron jobs here that you want to run on all machines
+
+# Every day at midnight
+0 0 * * * /path/to/daily-task.sh
+# Every hour
+0 * * * * /path/to/hourly-task.sh
+

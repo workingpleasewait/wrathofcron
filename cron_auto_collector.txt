@@ -1,0 +1,10 @@
+# Auto Data Collector - runs every 30 minutes
+# To install: crontab cron_auto_collector.txt
+# To check: crontab -l
+# To remove: crontab -r
+
+# Run automated data collection every 30 minutes
+*/30 * * * * cd /Users/mss/coinbase-trading \u0026\u0026 ./venv/bin/python3 scripts/auto_data_collector.py --start --interval 1800 \u003e\u003e logs/auto_collector.log 2\u003e\u00261
+
+# Alternative: Run on system boot and let the script handle its own scheduling
+# @reboot cd /Users/mss/coinbase-trading && /usr/bin/python3 scripts/auto_data_collector.py --start --interval 1800 >> logs/auto_collector.log 2>&1 &

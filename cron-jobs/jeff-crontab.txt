@@ -1,0 +1,14 @@
+# Machine-specific cron jobs for MacBook Air (jeff)
+# These jobs only run on this specific machine
+
+# Battery optimization script every morning at 8 AM
+0 8 * * * /usr/bin/pmset -b disablesleep 0
+
+# Clean up temporary files daily at 2 AM
+0 2 * * * find /tmp -name "*" -type f -mtime +7 -delete 2>/dev/null
+
+# Update Homebrew every Monday at 6 AM (using Homebrew installation path)
+0 6 * * 1 /opt/homebrew/bin/brew update && /opt/homebrew/bin/brew upgrade
+
+# Coinbase trading ladder monitoring (if monitor_ladder.sh exists)
+*/5 * * * * cd /Users/mss/coinbase-trading && ./monitor_ladder.sh >> /Users/mss/coinbase-trading/logs/ladder.log 2>&1
