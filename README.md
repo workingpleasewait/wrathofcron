@@ -1,4 +1,4 @@
-# 👑 WrathOfCron
+# 👾 WrathOfCron
 
 **A comprehensive cron job management and monitoring system for Unix/macOS environments.**
 
@@ -323,7 +323,9 @@ MIT License - see LICENSE file for details.
 
 ## 🎉 Why "WrathOfCron"?
 
-Because managing cron jobs shouldn't make you angry! This toolkit brings peace and order to the chaotic world of scheduled tasks, turning the "wrath" of broken cron jobs into the "wisdom" of well-monitored automation.
+A playful homage to the 1982 film **"Star Trek II: The Wrath of Khan"** – because managing cron jobs shouldn't make you angry! Just as Khan was a formidable adversary who required careful strategy to defeat, unruly cron jobs can wreak havoc on your systems if left unchecked.
+
+This toolkit brings peace and order to the chaotic world of scheduled tasks, turning the "wrath" of broken cron jobs into the "wisdom" of well-monitored automation. Consider WrathOfCron your strategic defense system against the Khan-like chaos of failing scheduled tasks.
 
 ---
 
