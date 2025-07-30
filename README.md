@@ -1,4 +1,4 @@
-# 👾 WrathOfCron
+# 🖖 WrathOfCron
 
 **A comprehensive cron job management and monitoring system for Unix/macOS environments.**
 
