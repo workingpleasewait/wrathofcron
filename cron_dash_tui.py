@@ -48,6 +48,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import statistics
+import logging
 
 from rich.console import Console
 from rich.layout import Layout
@@ -65,6 +66,10 @@ from rich import box
 # Database path (matches cron_collector.py)
 DB_PATH = Path.home() / ".cron_dash" / "ladder.db"
 REFRESH_INTERVAL = 1.0  # seconds
+
+# Set up logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)  # Only log errors to avoid cluttering TUI
 
 
 class CronDashboard:
@@ -107,14 +112,22 @@ class CronDashboard:
             self.conn.close()
 
     def _reconnect_db(self):
-        """Attempt to reconnect to the database."""
-        try:
-            if self.conn:
-                self.conn.close()
-            self.conn = sqlite3.connect(self.db_path)
-            self.conn.row_factory = sqlite3.Row
-        except sqlite3.Error:
-            self.conn = None
+        """Attempt to reconnect to the database with retry logic."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if self.conn:
+                    self.conn.close()
+                self.conn = sqlite3.connect(self.db_path)
+                self.conn.row_factory = sqlite3.Row
+                return True
+            except sqlite3.Error as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to reconnect to database after {max_retries} attempts: {e}")
+                    self.conn = None
+                    return False
+                time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+        return False
 
     def get_last_run_status(self) -> Optional[sqlite3.Row]:
         """Get the most recent run status."""
@@ -165,13 +178,13 @@ class CronDashboard:
             self._reconnect_db()
             return []
     
-    def calculate_run_duration(self, runs: List[Tuple[str, int]]) -> List[float]:
+    def calculate_run_duration(self, runs: List[sqlite3.Row]) -> List[float]:
         """Calculate approximate durations between runs."""
         durations = []
         for i in range(1, len(runs)):
             try:
-                t1 = datetime.fromisoformat(runs[i-1][0].replace('Z', '+00:00'))
-                t2 = datetime.fromisoformat(runs[i][0].replace('Z', '+00:00'))
+                t1 = datetime.fromisoformat(runs[i-1]['timestamp'].replace('Z', '+00:00'))
+                t2 = datetime.fromisoformat(runs[i]['timestamp'].replace('Z', '+00:00'))
                 duration = abs((t1 - t2).total_seconds())
                 durations.append(duration)
             except:
@@ -359,9 +372,7 @@ class CronDashboard:
                 self.success_history.pop(0)
             
             # Update runtime history (using intervals as proxy)
-            # Convert SQLite Row objects to tuples for calculate_run_duration
-            run_tuples = [(run['timestamp'], run['exit_code']) for run in runs[-10:]]
-            durations = self.calculate_run_duration(run_tuples)
+            durations = self.calculate_run_duration(runs[-10:])
             if durations:
                 avg_duration = statistics.mean(durations)
                 self.runtime_history.append(avg_duration)
