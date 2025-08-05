@@ -136,8 +136,9 @@ class CronCollector:
         
         if result.returncode != 0:
             error_msg = "terminal-notifier not found. Install with: brew install terminal-notifier"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
+            logger.warning(error_msg)
+            logger.info(f"FALLBACK NOTIFICATION: {title} - {message}")
+            return
             
         # Send notification
         cmd = [
@@ -342,35 +343,6 @@ class CronCollector:
             logger.error(f"Failed to insert entry: {e}")
             return False
             
-    def send_notification(self, title: str, message: str, sound: str = "default"):
-        """Send macOS notification using terminal-notifier."""
-        try:
-            # Check if terminal-notifier is available
-            result = subprocess.run(
-                ["which", "terminal-notifier"], 
-                capture_output=True, 
-                text=True
-            )
-            
-            if result.returncode != 0:
-                logger.warning("terminal-notifier not found, installing via Homebrew...")
-                subprocess.run(["brew", "install", "terminal-notifier"], check=True)
-                
-            # Send notification
-            cmd = [
-                "terminal-notifier",
-                "-title", title,
-                "-message", message,
-                "-sound", sound
-            ]
-            
-            subprocess.run(cmd, check=True)
-            logger.info(f"Notification sent: {title} - {message}")
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to send notification: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error sending notification: {e}")
             
     def process_new_entries(self) -> int:
         """Process new entries from JSONL file."""
@@ -396,7 +368,7 @@ class CronCollector:
                         
                         # Send notification for failures
                         if entry['exit_code'] != 0:
-                            self.send_notification(
+                            self.send_os_notification(
                                 "🚨 Cron Job Failed",
                                 f"Exit code {entry['exit_code']}: {entry['message'][:100]}",
                                 "Basso"

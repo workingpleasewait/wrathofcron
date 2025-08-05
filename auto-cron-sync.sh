@@ -2,10 +2,16 @@
 # Auto-sync cron jobs when changes are detected
 set -euo pipefail
 
-# Get the absolute path of the script directory
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+# Get the absolute path of the script directory (cross-platform)
+if [ "$(uname)" = "Darwin" ]; then
+    # macOS doesn't have readlink -f, use a different approach
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+else
+    # Linux has readlink -f
+    SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+fi
 
-# Convert all paths to absolute
+# Set paths relative to script directory
 CRON_MANAGER="$SCRIPT_DIR/cron-manager.sh"
 LAST_CHECK_FILE="$SCRIPT_DIR/.last-cron-check"
 SHARED_CRONTAB="$SCRIPT_DIR/shared-crontab.txt"
@@ -15,12 +21,6 @@ CRON_JOBS_DIR="$SCRIPT_DIR/cron-jobs"
 if [ ! -f "$LAST_CHECK_FILE" ]; then
     touch "$LAST_CHECK_FILE"
 fi
-
-# Convert to absolute paths after ensuring files exist
-CRON_MANAGER="$(readlink -f "$CRON_MANAGER")"
-LAST_CHECK_FILE="$(readlink -f "$LAST_CHECK_FILE")"
-SHARED_CRONTAB="$(readlink -f "$SHARED_CRONTAB")"
-CRON_JOBS_DIR="$(readlink -f "$CRON_JOBS_DIR")"
 
 # Check if shared cron file has been updated
 if [ "$SHARED_CRONTAB" -nt "$LAST_CHECK_FILE" ] || 
