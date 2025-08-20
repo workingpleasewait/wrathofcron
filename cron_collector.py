@@ -29,6 +29,7 @@ import threading
 from dateutil import parser as dateutil_parser
 import daemon
 from daemon import pidfile
+import time as time_module
 
 # Configuration
 LADDER_JSONL_PATH = Path.home() / "logs" / "ladder.jsonl"
@@ -225,13 +226,39 @@ class CronCollector:
         except Exception as e:
             logger.error(f"Failed to remove PID file: {e}")
         
+    def get_db_connection(self, max_retries=3, timeout=30):
+        """Get database connection with retry logic and proper configuration."""
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(
+                    self.db_path,
+                    timeout=timeout,
+                    check_same_thread=False,
+                    isolation_level=None  # Enable autocommit mode
+                )
+                conn.row_factory = sqlite3.Row
+                # Enable WAL mode for better concurrent access
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA cache_size=10000")
+                conn.execute("PRAGMA temp_store=MEMORY")
+                return conn
+            except sqlite3.Error as e:
+                if attempt == max_retries - 1:  # Last attempt
+                    logger.error(f"Failed to connect to database after {max_retries} attempts: {e}")
+                    raise
+                wait_time = 0.5 * (attempt + 1)  # Exponential backoff
+                logger.warning(f"Database connection attempt {attempt + 1} failed: {e}, retrying in {wait_time}s")
+                time_module.sleep(wait_time)
+        
     def init_database(self):
         """Initialize SQLite database with required tables."""
         try:
             # Ensure directory exists
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             
-            with sqlite3.connect(self.db_path) as conn:
+            conn = self.get_db_connection()
+            try:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS cron_entries (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -258,6 +285,8 @@ class CronCollector:
                 
                 conn.commit()
                 logger.info(f"Database initialized at {self.db_path}")
+            finally:
+                conn.close()
                 
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
@@ -294,7 +323,8 @@ class CronCollector:
     def insert_entry(self, entry: Dict) -> bool:
         """Insert entry into database, avoiding duplicates."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            conn = self.get_db_connection()
+            try:
                 conn.execute("""
                     INSERT OR IGNORE INTO cron_entries 
                     (timestamp, exit_code, message, parsed_at)
@@ -312,6 +342,8 @@ class CronCollector:
                 else:
                     logger.debug(f"Duplicate entry skipped: {entry['message'][:50]}...")
                     return False
+            finally:
+                conn.close()
                     
         except Exception as e:
             logger.error(f"Failed to insert entry: {e}")
@@ -320,7 +352,8 @@ class CronCollector:
     def insert_entry_safe(self, entry: Dict[str, Any]) -> bool:
         """Insert entry into database with explicit IntegrityError handling."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            conn = self.get_db_connection()
+            try:
                 conn.execute("""
                     INSERT INTO cron_entries 
                     (timestamp, exit_code, message, parsed_at)
@@ -335,6 +368,8 @@ class CronCollector:
                 conn.commit()
                 logger.debug(f"Inserted new entry: {entry['message'][:50]}...")
                 return True
+            finally:
+                conn.close()
                 
         except sqlite3.IntegrityError as e:
             logger.debug(f"Duplicate entry skipped (IntegrityError): {entry['message'][:50]}... - {e}")

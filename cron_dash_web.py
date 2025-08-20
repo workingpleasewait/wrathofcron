@@ -26,6 +26,8 @@ The dashboard reads from ~/.cron_dash/ladder.db and displays interactive charts.
 from flask import Flask, render_template, g, request
 from werkzeug.security import check_password_hash, generate_password_hash
 from functools import wraps
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import sqlite3
 import json
 import os
@@ -40,6 +42,14 @@ import re
 import socket
 
 app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', 'dev-key-change-in-production')
+
+# Initialize rate limiter
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 # Configuration from environment variables with validation
 DEBUG = os.getenv('DEBUG', 'false').lower() in ('true', '1', 'yes', 'on')
@@ -619,6 +629,7 @@ def authenticate():
 dashboard = CronWebDashboard()
 
 @app.route('/')
+@limiter.limit("30 per minute")
 @requires_auth
 def index():
     """Main dashboard page."""

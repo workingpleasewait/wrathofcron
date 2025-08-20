@@ -1,5 +1,6 @@
 rich
 flask
+flask-limiter
 plotly
 python-dateutil
 python-daemon
