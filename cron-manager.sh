@@ -40,14 +40,16 @@ install_shared_cron() {
     
     # Combine shared and machine-specific cron jobs
     TMPFILE=$(mktemp)
-    > "$TMPFILE"  # Clear temp file
+    true > "$TMPFILE"  # Clear temp file
     
     # Add shared cront jobs
     if [ -f "$CRON_FILE" ]; then
         log "Adding shared cron jobs from $CRON_FILE"
-        echo "# === SHARED CRON JOBS (synced across all machines) ===" >> "$TMPFILE"
-        cat "$CRON_FILE" >> "$TMPFILE"
-        echo "" >> "$TMPFILE"
+        {
+            echo "# === SHARED CRON JOBS (synced across all machines) ==="
+            cat "$CRON_FILE"
+            echo ""
+        } >> "$TMPFILE"
     fi
     
     # Add machine-specific cron jobs
@@ -151,7 +153,7 @@ status() {
     echo ""
     
     if [ -f "$CRON_FILE" ]; then
-        SHARED_COUNT=$(grep -v '^#' "$CRON_FILE" | grep -v '^$' | wc -l | tr -d ' ')
+        SHARED_COUNT=$(grep -v '^#' "$CRON_FILE" | grep -c -v '^$')
         echo "📋 Shared cron jobs: $SHARED_COUNT"
     else
         echo "📋 Shared cron jobs: 0 (no file)"
@@ -159,14 +161,14 @@ status() {
     
     MACHINE_CRON="$MACHINE_SPECIFIC_DIR/$MACHINE_NAME-crontab.txt"
     if [ -f "$MACHINE_CRON" ]; then
-        MACHINE_COUNT=$(grep -v '^#' "$MACHINE_CRON" | grep -v '^$' | wc -l | tr -d ' ')
+        MACHINE_COUNT=$(grep -v '^#' "$MACHINE_CRON" | grep -c -v '^$')
         echo "🖥️  Machine-specific jobs: $MACHINE_COUNT"
     else
         echo "🖥️  Machine-specific jobs: 0 (no file)"
     fi
     
     if crontab -l 2>/dev/null > /dev/null; then
-        ACTIVE_COUNT=$(crontab -l | grep -v '^#' | grep -v '^$' | wc -l | tr -d ' ')
+        ACTIVE_COUNT=$(crontab -l | grep -v '^#' | grep -c -v '^$')
         echo "⚡ Active cron jobs: $ACTIVE_COUNT"
     else
         echo "⚡ Active cron jobs: 0"

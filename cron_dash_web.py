@@ -23,9 +23,11 @@ USAGE:
 The dashboard reads from ~/.cron_dash/ladder.db and displays interactive charts.
 """
 
-from flask import Flask, render_template_string, g, request
+from flask import Flask, render_template, g, request
 from werkzeug.security import check_password_hash, generate_password_hash
 from functools import wraps
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import sqlite3
 import json
 import os
@@ -40,15 +42,40 @@ import re
 import socket
 
 app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', 'dev-key-change-in-production')
 
-# Configuration from environment variables
+# Initialize rate limiter
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
+
+# Configuration from environment variables with validation
 DEBUG = os.getenv('DEBUG', 'false').lower() in ('true', '1', 'yes', 'on')
 HOST = os.getenv('HOST', '0.0.0.0')
-PORT = int(os.getenv('PORT', '5001'))
 
-# Basic Auth configuration
+# Validate PORT
+try:
+    PORT = int(os.getenv('PORT', '5001'))
+    if not (1 <= PORT <= 65535):
+        raise ValueError(f"PORT must be between 1 and 65535, got {PORT}")
+except ValueError as e:
+    print(f"Warning: Invalid PORT environment variable: {e}. Using default 5001.")
+    PORT = 5001
+
+# Basic Auth configuration with validation
 AUTH_USERNAME = os.getenv('AUTH_USERNAME', 'admin')
 AUTH_PASSWORD = os.getenv('AUTH_PASSWORD', 'password')
+
+# Validate auth credentials
+if len(AUTH_USERNAME.strip()) == 0:
+    print("Warning: AUTH_USERNAME is empty. Using default 'admin'.")
+    AUTH_USERNAME = 'admin'
+
+if len(AUTH_PASSWORD) < 8:
+    print("Warning: AUTH_PASSWORD should be at least 8 characters for security.")
+
 # Store password hash for security
 AUTH_PASSWORD_HASH = generate_password_hash(AUTH_PASSWORD)
 
@@ -602,6 +629,7 @@ def authenticate():
 dashboard = CronWebDashboard()
 
 @app.route('/')
+@limiter.limit("30 per minute")
 @requires_auth
 def index():
     """Main dashboard page."""
@@ -610,313 +638,8 @@ def index():
     status_info = dashboard.get_status_info()
     cron_jobs = dashboard.get_cron_jobs()
     
-    template = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="refresh" content="30">
-    <title>Cron Dashboard</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        body {
-            background-color: #f8f9fa;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        .dashboard-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 2rem 0;
-            margin-bottom: 2rem;
-        }
-        .status-card {
-            border-radius: 15px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .chart-container {
-            background: white;
-            border-radius: 15px;
-            padding: 1.5rem;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            margin-bottom: 2rem;
-        }
-        .status-icon {
-            font-size: 2rem;
-            margin-right: 0.5rem;
-        }
-        .last-updated {
-            font-size: 0.8rem;
-            color: #6c757d;
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-        }
-        .metric-value {
-            font-size: 2rem;
-            font-weight: bold;
-        }
-        .cron-grid {
-            display: grid;
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-        .cron-card {
-            background: white;
-            border-radius: 12px;
-            padding: 1.5rem;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            border-left: 4px solid #007bff;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        .cron-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-        }
-        .cron-card.trading {
-            border-left-color: #28a745;
-        }
-        .cron-card.monitoring {
-            border-left-color: #17a2b8;
-        }
-        .cron-card.maintenance {
-            border-left-color: #ffc107;
-        }
-        .cron-card.system {
-            border-left-color: #6f42c1;
-        }
-        .cron-card.scheduled {
-            border-left-color: #fd7e14;
-        }
-        .job-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 1rem;
-        }
-        .job-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            margin: 0;
-            color: #2c3e50;
-        }
-        .job-type-badge {
-            font-size: 0.75rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.375rem;
-            font-weight: 500;
-        }
-        .job-schedule {
-            background: #f8f9fa;
-            padding: 0.5rem;
-            border-radius: 0.375rem;
-            margin: 0.5rem 0;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            font-size: 0.85rem;
-        }
-        .job-description {
-            color: #6c757d;
-            font-size: 0.9rem;
-            margin: 0.5rem 0;
-        }
-        .job-command {
-            background: #2c3e50;
-            color: #ecf0f1;
-            padding: 0.5rem;
-            border-radius: 0.375rem;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            font-size: 0.8rem;
-            word-break: break-all;
-            margin-top: 0.5rem;
-        }
-        .section-header {
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-            padding: 1rem;
-            border-radius: 8px;
-            margin: 1.5rem 0 1rem 0;
-            border-left: 4px solid #007bff;
-        }
-        .section-title {
-            margin: 0;
-            color: #495057;
-            font-size: 1.1rem;
-            font-weight: 600;
-        }
-        .machine-info {
-            background: #e3f2fd;
-            border: 1px solid #bbdefb;
-            border-radius: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin: 0.5rem 0;
-            font-size: 0.85rem;
-            color: #1565c0;
-            display: inline-block;
-        }
-        .machine-info strong {
-            color: #0d47a1;
-        }
-        @media (min-width: 768px) {
-            .cron-grid {
-                grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="dashboard-header">
-        <div class="container">
-            <div class="row align-items-center">
-                <div class="col">
-                    <h1 class="display-4 mb-0">🚀 Cron Dashboard</h1>
-                    <p class="lead mb-0">Real-time monitoring of cron job execution</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="container">
-        <!-- Status Banner -->
-        <div class="row mb-4">
-            <div class="col">
-                <div class="card status-card border-0 alert-{{ status_info.color }}">
-                    <div class="card-body">
-                        <div class="row align-items-center">
-                            <div class="col-md-8">
-                                <div class="d-flex align-items-center">
-                                    {% if status_info.color == 'success' %}
-                                        <span class="status-icon">✅</span>
-                                    {% elif status_info.color == 'warning' %}
-                                        <span class="status-icon">⚠️</span>
-                                    {% else %}
-                                        <span class="status-icon">❌</span>
-                                    {% endif %}
-                                    <div>
-                                        <h3 class="mb-1">{{ status_info.message }}</h3>
-                                        <p class="mb-0">
-                                            {% if status_info.last_run %}
-                                                Last run: {{ status_info.last_run }}
-                                                {% if status_info.last_exit_code == 0 %}
-                                                    <span class="badge bg-success">Success</span>
-                                                {% else %}
-                                                    <span class="badge bg-danger">Failed ({{ status_info.last_exit_code }})</span>
-                                                {% endif %}
-                                            {% else %}
-                                                No recent runs
-                                            {% endif %}
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-md-4 text-md-end">
-                                <div class="metric-value text-{{ status_info.color }}">
-                                    {{ "%.1f" | format(status_info.success_rate) }}%
-                                </div>
-                                <small class="text-muted">Success Rate (24h)<br>{{ status_info.total_runs }} total runs</small>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Cron Jobs Grid -->
-        <div class="row mb-4">
-            <div class="col-12">
-                <div class="chart-container">
-                    <h4 class="mb-4">📅 Cron Jobs Overview</h4>
-                    
-                    {% set current_section = '' %}
-                    {% for job in cron_jobs %}
-                        {% if job.section != current_section %}
-                            {% set current_section = job.section %}
-                            <div class="section-header">
-                                <h5 class="section-title">{{ job.section }}</h5>
-                            </div>
-                        {% endif %}
-                        
-                        <div class="cron-card {{ job.type.lower() }}">
-                            <div class="job-header">
-                                <h6 class="job-title">{{ job.name }}</h6>
-                                <div>
-                                    <span class="badge job-type-badge bg-{{ 'success' if job.type == 'Trading' else 'info' if job.type == 'Monitoring' else 'warning' if job.type == 'Maintenance' else 'secondary' }}">{{ job.type }}</span>
-                                    <span class="badge bg-{{ job.status_color }} ms-1">{{ job.status }}</span>
-                                </div>
-                            </div>
-                            
-                            <div class="job-description">{{ job.description }}</div>
-                            
-                            <div class="machine-info">
-                                <strong>Running on:</strong> {{ job.machine_display }}
-                            </div>
-                            
-                            <div class="job-schedule">
-                                <strong>Schedule:</strong> {{ job.schedule_human }}
-                                <br><small class="text-muted">Cron: {{ job.schedule }}</small>
-                            </div>
-                            
-                            <details>
-                                <summary style="cursor: pointer; color: #6c757d; font-size: 0.9rem;">Show command</summary>
-                                <div class="job-command">{{ job.command }}</div>
-                            </details>
-                        </div>
-                    {% endfor %}
-                    
-                    {% if not cron_jobs %}
-                        <div class="text-center text-muted py-4">
-                            <h5>No cron jobs found</h5>
-                            <p>No active cron jobs detected on this system.</p>
-                        </div>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-
-        <!-- Charts Row -->
-        <div class="row">
-            <!-- Runtime Chart -->
-            <div class="col-lg-8 mb-4">
-                <div class="chart-container">
-                    <h5 class="card-title mb-3">Runtime Intervals (7 Days)</h5>
-                    <div id="runtime-chart"></div>
-                </div>
-            </div>
-            
-            <!-- Heatmap -->
-            <div class="col-lg-4 mb-4">
-                <div class="chart-container">
-                    <h5 class="card-title mb-3">Success Rate by Hour</h5>
-                    <div id="heatmap-chart"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="last-updated">
-        Last updated: {{ datetime.now().strftime('%Y-%m-%d %H:%M:%S') }} • Auto-refresh: 30s
-    </div>
-
-    <script>
-        // Render runtime chart
-        var runtimeChart = {{ runtime_chart|safe }};
-        Plotly.newPlot('runtime-chart', runtimeChart.data, runtimeChart.layout, {responsive: true});
-        
-        // Render heatmap
-        var heatmapChart = {{ heatmap_chart|safe }};
-        Plotly.newPlot('heatmap-chart', heatmapChart.data, heatmapChart.layout, {responsive: true});
-        
-        // Make charts responsive
-        window.addEventListener('resize', function() {
-            Plotly.Plots.resize('runtime-chart');
-            Plotly.Plots.resize('heatmap-chart');
-        });
-    </script>
-</body>
-</html>
-    """
-    
-    return render_template_string(
-        template,
+    return render_template(
+        'dashboard.html',
         runtime_chart=runtime_chart,
         heatmap_chart=heatmap_chart,
         status_info=status_info,
